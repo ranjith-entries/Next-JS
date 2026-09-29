@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Todo API Request Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: one reading column; a wide pipeline map, then a two-pane tracer (stages | request/response), then module wiring. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --fg: #1a2230;
+  --muted: #5d6677;
+  --line: #d3d9e2;
+  --accent: #1f5fbf;
+  --accent-soft: #e3ecfa;
+  --ok: #1d7f52;
+  --ok-soft: #e1f3ea;
+  --err: #b93a32;
+  --err-soft: #f8e4e2;
+  --skip: #9aa3b2;
+  --code-bg: #eef1f5;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11151c; --surface: #181e27; --fg: #e4e8ef; --muted: #98a2b3; --line: #2c3544;
+    --accent: #7aa7f0; --accent-soft: #1d2a40; --ok: #5cc592; --ok-soft: #173126;
+    --err: #f08a80; --err-soft: #3a1f1d; --skip: #5d6677; --code-bg: #10141a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11151c; --surface: #181e27; --fg: #e4e8ef; --muted: #98a2b3; --line: #2c3544;
+  --accent: #7aa7f0; --accent-soft: #1d2a40; --ok: #5cc592; --ok-soft: #173126;
+  --err: #f08a80; --err-soft: #3a1f1d; --skip: #5d6677; --code-bg: #10141a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 64px; display: flex; flex-direction: column; gap: 48px; }
+h1, h2 { font-family: var(--font-display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); line-height: 1.1; }
+h2 { font-size: 1.35rem; }
+p { margin: 0; max-width: 68ch; }
+.muted { color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+header { display: flex; flex-direction: column; gap: 10px; }
+section { display: flex; flex-direction: column; gap: 16px; }
+
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.scroll svg { display: block; min-width: 860px; width: 100%; height: auto; color: var(--fg); }
+figcaption { font-size: 13px; color: var(--muted); max-width: 80ch; }
+
+/* Scenario picker */
+.scenarios { display: flex; flex-wrap: wrap; gap: 8px; }
+.scenarios button {
+  font: 500 13px/1 var(--font-body);
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 12px 9px 14px;
+  display: inline-flex; align-items: center; gap: 8px;
+  cursor: pointer;
+}
+.scenarios button:hover { border-color: var(--accent); }
+.scenarios button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.scenarios button:focus-visible, .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.code-pill { font: 500 11px/1 var(--font-mono); padding: 4px 6px; border-radius: 5px; }
+.code-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.code-pill.err { background: var(--err-soft); color: var(--err); }
+
+.tracer { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 820px) { .tracer { grid-template-columns: minmax(0, 1fr); } }
+
+/* Stage list */
+.stages { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.stage { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; position: relative; padding-bottom: 14px; }
+.stage:not(:last-child)::before { content: ""; position: absolute; left: 16px; top: 34px; bottom: 0; width: 2px; background: var(--line); }
+.stage.pass:not(:last-child)::before { background: var(--accent); }
+.dot { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font: 600 13px/1 var(--font-mono); border: 2px solid var(--line); background: var(--surface); color: var(--muted); z-index: 1; }
+.stage.pass .dot { border-color: var(--accent); color: var(--accent); }
+.stage.stop .dot { border-color: var(--err); background: var(--err-soft); color: var(--err); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.stage.stop .card { border-color: var(--err); }
+.stage.skip .card { background: transparent; border-style: dashed; }
+.stage.skip .card > * { opacity: 0.55; }
+.stage-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.stage-name { font-weight: 600; }
+.stage-role { font-size: 12px; color: var(--muted); }
+.files { display: flex; flex-wrap: wrap; gap: 6px; }
+.files span { font: 12px/1.3 var(--font-mono); background: var(--code-bg); border-radius: 5px; padding: 3px 6px; overflow-wrap: anywhere; }
+.note { font-size: 14px; }
+.note code { background: var(--code-bg); padding: 1px 4px; border-radius: 4px; }
+.stage.stop .note { color: var(--err); font-weight: 500; }
+.stage.skip .note { font-style: italic; }
+
+/* Request / response panel */
+.panel { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.box-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--line); font: 500 12px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.box pre { margin: 0; padding: 12px 14px; font: 13px/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code-bg); }
+.box .why { padding: 10px 14px; font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); }
+.method { color: var(--accent); font-weight: 500; }
+.status { font: 600 13px/1 var(--font-mono); padding: 5px 8px; border-radius: 6px; text-transform: none; letter-spacing: 0; }
+.status.ok { background: var(--ok-soft); color: var(--ok); }
+.status.err { background: var(--err-soft); color: var(--err); }
+
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 820px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.tree { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font: 13px/1.6 var(--font-mono); overflow-x: auto; white-space: pre; }
+.tree b { color: var(--accent); font-weight: 500; }
+.tree i { color: var(--muted); font-style: normal; }
+.codes { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.codes th, .codes td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.codes th { font: 500 12px/1.2 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.codes tr:last-child td { border-bottom: 0; }
+.table-wrap { overflow-x: auto; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .card, .dot, .stage::before { transition: border-color 160ms ease, background-color 160ms ease, opacity 160ms ease; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">fullstack-app · backend :4000</span>
+    <h1>How a request travels through the Todo API</h1>
+    <p class="muted">Every request passes the same layers in the same order. Each layer can stop it with its own status code. This shows the app after step A4, where each user only sees their own todos.</p>
+  </header>
+
+  <section aria-labelledby="map-h">
+    <h2 id="map-h">The whole path at a glance</h2>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 1100 250" role="img" aria-label="A request goes from the client through main.ts, JwtAuthGuard, the pipes, the controller, the service and PrismaService to SQLite. The response returns the same way. The guard can stop it with 401, the pipes with 400, and the service with 404 or 409.">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+            <marker id="arr-err" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M0 0 L10 5 L0 10 z" fill="#c2463d"/>
+            </marker>
+          </defs>
+
+          <rect x="134" y="22" width="960" height="116" rx="10" fill="none" stroke="currentColor" stroke-opacity="0.35" stroke-dasharray="5 5"/>
+          <text x="148" y="40" font-size="12" fill="currentColor" fill-opacity="0.7" font-family="IBM Plex Mono, monospace">NestJS backend · localhost:4000</text>
+
+          <text x="8" y="44" font-size="12" fill="currentColor" font-family="IBM Plex Mono, monospace">request →</text>
+          <text x="8" y="156" font-size="12" fill="currentColor" fill-opacity="0.7" font-family="IBM Plex Mono, monospace">← response (JSON)</text>
+
+          <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+            <g>
+              <rect x="8" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="67" y="87" font-size="13" font-weight="600" fill="currentColor">Client</text>
+              <text x="67" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">page.tsx · Postman</text>
+            </g>
+            <g>
+              <rect x="146" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="205" y="87" font-size="13" font-weight="600" fill="currentColor">Express</text>
+              <text x="205" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">main.ts</text>
+            </g>
+            <g>
+              <rect x="284" y="60" width="118" height="64" rx="8" fill="#1f5fbf" fill-opacity="0.12" stroke="#1f5fbf" stroke-width="1.5"/>
+              <text x="343" y="87" font-size="13" font-weight="600" fill="currentColor">JwtAuthGuard</text>
+              <text x="343" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">jwt-auth.guard.ts</text>
+            </g>
+            <g>
+              <rect x="422" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="481" y="87" font-size="13" font-weight="600" fill="currentColor">Pipes</text>
+              <text x="481" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">*.dto.ts</text>
+            </g>
+            <g>
+              <rect x="560" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="619" y="87" font-size="13" font-weight="600" fill="currentColor">Controller</text>
+              <text x="619" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">*.controller.ts</text>
+            </g>
+            <g>
+              <rect x="698" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="757" y="87" font-size="13" font-weight="600" fill="currentColor">Service</text>
+              <text x="757" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">*.service.ts</text>
+            </g>
+            <g>
+              <rect x="836" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="895" y="87" font-size="13" font-weight="600" fill="currentColor">PrismaService</text>
+              <text x="895" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">prisma.service.ts</text>
+            </g>
+            <g>
+              <rect x="974" y="60" width="118" height="64" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+              <text x="1033" y="87" font-size="13" font-weight="600" fill="currentColor">SQLite</text>
+              <text x="1033" y="105" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">dev.db</text>
+            </g>
+          </g>
+
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <line x1="126" y1="76" x2="144" y2="76" marker-end="url(#arr)"/>
+            <line x1="264" y1="76" x2="282" y2="76" marker-end="url(#arr)"/>
+            <line x1="402" y1="76" x2="420" y2="76" marker-end="url(#arr)"/>
+            <line x1="540" y1="76" x2="558" y2="76" marker-end="url(#arr)"/>
+            <line x1="678" y1="76" x2="696" y2="76" marker-end="url(#arr)"/>
+            <line x1="816" y1="76" x2="834" y2="76" marker-end="url(#arr)"/>
+            <line x1="954" y1="76" x2="972" y2="76" marker-end="url(#arr)"/>
+          </g>
+          <g stroke="currentColor" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="3 3" fill="none">
+            <line x1="146" y1="112" x2="128" y2="112" marker-end="url(#arr)"/>
+            <line x1="284" y1="112" x2="266" y2="112" marker-end="url(#arr)"/>
+            <line x1="422" y1="112" x2="404" y2="112" marker-end="url(#arr)"/>
+            <line x1="560" y1="112" x2="542" y2="112" marker-end="url(#arr)"/>
+            <line x1="698" y1="112" x2="680" y2="112" marker-end="url(#arr)"/>
+            <line x1="836" y1="112" x2="818" y2="112" marker-end="url(#arr)"/>
+            <line x1="974" y1="112" x2="956" y2="112" marker-end="url(#arr)"/>
+          </g>
+
+          <g stroke="#c2463d" stroke-width="1.5" fill="none">
+            <line x1="343" y1="124" x2="343" y2="196" marker-end="url(#arr-err)"/>
+            <line x1="481" y1="124" x2="481" y2="196" marker-end="url(#arr-err)"/>
+            <line x1="757" y1="124" x2="757" y2="196" marker-end="url(#arr-err)"/>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" fill-opacity="0.8">
+            <text x="351" y="170">no / bad token</text>
+            <text x="489" y="170">invalid body or :id</text>
+            <text x="765" y="170">not yours · name taken</text>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="12" font-weight="500" text-anchor="middle">
+            <rect x="288" y="200" width="110" height="28" rx="14" fill="#c2463d" fill-opacity="0.14" stroke="#c2463d"/>
+            <text x="343" y="219" fill="#c2463d">401</text>
+            <rect x="426" y="200" width="110" height="28" rx="14" fill="#c2463d" fill-opacity="0.14" stroke="#c2463d"/>
+            <text x="481" y="219" fill="#c2463d">400</text>
+            <rect x="702" y="200" width="110" height="28" rx="14" fill="#c2463d" fill-opacity="0.14" stroke="#c2463d"/>
+            <text x="757" y="219" fill="#c2463d">404 / 409</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>Solid arrows carry the request forward. Dashed arrows carry the response back. A red exit means that layer threw an exception, and NestJS turned it into a JSON error. Later layers never run.</figcaption>
+    </figure>
+  </section>
+
+  <section aria-labelledby="trace-h">
+    <h2 id="trace-h">Trace one request</h2>
+    <p class="muted">Pick a request to see what each file does with it, and where it stops.</p>
+    <div class="scenarios" role="group" aria-label="Choose a request" id="scenarios"></div>
+    <div class="tracer">
+      <ol class="stages" id="stages" aria-live="polite"></ol>
+      <div class="panel">
+        <div class="box">
+          <div class="box-head"><span>Request</span></div>
+          <pre id="req"></pre>
+        </div>
+        <div class="box">
+          <div class="box-head"><span>Response</span><span class="status" id="status"></span></div>
+          <pre id="res"></pre>
+          <div class="why" id="why"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="wiring-h">
+    <h2 id="wiring-h">How the modules are wired</h2>
+    <figure>
+      <div class="scroll">
+        <svg viewBox="0 0 900 290" role="img" aria-label="AppModule imports PrismaModule, TodosModule, UsersModule and AuthModule. AuthModule also imports UsersModule. TodosService and UsersService inject PrismaService, which is global, so no import is needed.">
+          <defs>
+            <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+            <rect x="350" y="12" width="200" height="46" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.6"/>
+            <text x="450" y="33" font-size="13" font-weight="600" fill="currentColor">AppModule</text>
+            <text x="450" y="49" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">app.module.ts</text>
+
+            <rect x="16" y="120" width="190" height="72" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+            <text x="111" y="142" font-size="13" font-weight="600" fill="currentColor">PrismaModule</text>
+            <text x="111" y="161" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">@Global()</text>
+            <text x="111" y="178" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">exports PrismaService</text>
+
+            <rect x="236" y="120" width="190" height="72" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+            <text x="331" y="142" font-size="13" font-weight="600" fill="currentColor">TodosModule</text>
+            <text x="331" y="161" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">TodosController</text>
+            <text x="331" y="178" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">TodosService</text>
+
+            <rect x="456" y="120" width="190" height="72" rx="8" fill="currentColor" fill-opacity="0.04" stroke="currentColor" stroke-opacity="0.5"/>
+            <text x="551" y="142" font-size="13" font-weight="600" fill="currentColor">UsersModule</text>
+            <text x="551" y="161" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">UsersService</text>
+            <text x="551" y="178" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">exports UsersService</text>
+
+            <rect x="686" y="120" width="198" height="72" rx="8" fill="#1f5fbf" fill-opacity="0.12" stroke="#1f5fbf" stroke-width="1.5"/>
+            <text x="785" y="142" font-size="13" font-weight="600" fill="currentColor">AuthModule</text>
+            <text x="785" y="161" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">AuthController · AuthService</text>
+            <text x="785" y="178" font-size="11" fill="currentColor" fill-opacity="0.75" font-family="IBM Plex Mono, monospace">JwtModule · APP_GUARD</text>
+          </g>
+
+          <g stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M450 58 V84 H111 V118" marker-end="url(#arr2)"/>
+            <path d="M450 84 H331 V118" marker-end="url(#arr2)"/>
+            <path d="M450 84 H551 V118" marker-end="url(#arr2)"/>
+            <path d="M450 84 H785 V118" marker-end="url(#arr2)"/>
+            <line x1="686" y1="156" x2="648" y2="156" marker-end="url(#arr2)"/>
+          </g>
+          <text x="458" y="78" font-size="11" fill="currentColor" fill-opacity="0.8" font-family="IBM Plex Mono, monospace">imports</text>
+          <text x="667" y="148" font-size="11" fill="currentColor" fill-opacity="0.8" font-family="IBM Plex Mono, monospace" text-anchor="middle">imports</text>
+
+          <g stroke="currentColor" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="4 4" fill="none">
+            <path d="M551 192 V238 H111 V194" marker-end="url(#arr2)"/>
+            <path d="M331 192 V238"/>
+          </g>
+          <text x="331" y="262" font-size="11" fill="currentColor" fill-opacity="0.8" font-family="IBM Plex Mono, monospace" text-anchor="middle">inject PrismaService (global, so no import needed)</text>
+        </svg>
+      </div>
+      <figcaption>A service is private to its module unless the module exports it. AuthService can use UsersService because UsersModule exports it and AuthModule imports it. PrismaModule is @Global, so any service can inject PrismaService directly. APP_GUARD, registered in AuthModule, applies JwtAuthGuard to every route in the app.</figcaption>
+    </figure>
+  </section>
+
+  <section aria-labelledby="files-h">
+    <h2 id="files-h">Where each piece lives</h2>
+    <div class="two">
+<pre class="tree">backend/
+├── <b>.env</b>                      <i>DATABASE_URL, JWT_SECRET</i>
+├── dev.db                    <i>the SQLite database</i>
+├── prisma/
+│   ├── schema.prisma         <i>User, Todo, Role</i>
+│   └── migrations/
+└── src/
+    ├── <b>main.ts</b>               <i>dotenv, CORS, ValidationPipe</i>
+    ├── app.module.ts         <i>wires the modules</i>
+    ├── prisma/
+    │   ├── prisma.module.ts  <i>@Global</i>
+    │   └── prisma.service.ts <i>DB client</i>
+    ├── auth/
+    │   ├── auth.module.ts    <i>JwtModule, APP_GUARD</i>
+    │   ├── auth.controller.ts<i> register, login, me</i>
+    │   ├── auth.service.ts   <i>bcrypt, sign JWT</i>
+    │   ├── jwt-payload.ts    <i>token shape</i>
+    │   ├── dto/auth.dto.ts
+    │   ├── guards/
+    │   │   └── <b>jwt-auth.guard.ts</b>
+    │   └── decorators/
+    │       ├── public.decorator.ts
+    │       └── current-user.decorator.ts
+    ├── users/
+    │   ├── users.module.ts
+    │   └── users.service.ts  <i>findByUsername, create</i>
+    └── todos/
+        ├── todos.module.ts
+        ├── todos.controller.ts
+        ├── todos.service.ts  <i>WHERE userId = me</i>
+        └── dto/
+            ├── create-todo.dto.ts
+            └── update-todo.dto.ts</pre>
+      <div class="table-wrap">
+        <table class="codes">
+          <thead><tr><th>Code</th><th>Meaning</th><th>Thrown in</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">200 / 201 / 204</td><td>OK, created, deleted</td><td class="mono">controller return</td></tr>
+            <tr><td class="mono">400</td><td>Bad body or :id</td><td class="mono">ValidationPipe, ParseIntPipe</td></tr>
+            <tr><td class="mono">401</td><td>No token, bad token, or wrong password</td><td class="mono">jwt-auth.guard.ts, auth.service.ts</td></tr>
+            <tr><td class="mono">403</td><td>Wrong role (coming in A5)</td><td class="mono">roles.guard.ts</td></tr>
+            <tr><td class="mono">404</td><td>Todo missing, or not yours</td><td class="mono">todos.service.ts</td></tr>
+            <tr><td class="mono">409</td><td>Username already taken</td><td class="mono">auth.service.ts</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+const STAGES = [
+  { key: "client", name: "Client", role: "sends the HTTP request", files: ["frontend/app/page.tsx", "Postman"] },
+  { key: "main", name: "Express + main.ts", role: "CORS, parse JSON, match route", files: ["src/main.ts", "src/app.module.ts"] },
+  { key: "guard", name: "JwtAuthGuard", role: "who are you?", files: ["auth/guards/jwt-auth.guard.ts", "auth/decorators/public.decorator.ts"] },
+  { key: "pipes", name: "Pipes", role: "is the input valid?", files: ["ValidationPipe", "ParseIntPipe"] },
+  { key: "controller", name: "Controller", role: "route to method", files: [] },
+  { key: "service", name: "Service", role: "business rules", files: [] },
+  { key: "prisma", name: "PrismaService", role: "builds the SQL", files: ["src/prisma/prisma.service.ts"] },
+  { key: "db", name: "SQLite", role: "stores the data", files: ["dev.db"] },
+];
+
+const BOB = "Authorization: Bearer eyJhbGciOiJIUzI1NiIs… (bob, id 4)";
+
+const SCENARIOS = [
+  {
+    id: "login", label: "Log in", code: 200,
+    req: "POST /auth/login\nContent-Type: application/json\n\n{\n  \"username\": \"admin\",\n  \"password\": \"admin123\"\n}",
+    files: { pipes: ["auth/dto/auth.dto.ts"], controller: ["auth/auth.controller.ts"], service: ["auth/auth.service.ts", "users/users.service.ts"] },
+    steps: {
+      client: ["pass", "Sends the username and password as JSON."],
+      main: ["pass", "CORS allows it. The JSON body is parsed. The route matches <code>AuthController.login</code>."],
+      guard: ["pass", "The route has <code>@Public()</code>, so the guard lets it through without a token."],
+      pipes: ["pass", "<code>AuthDto</code>: username isn't empty and the password is at least 6 characters ✓"],
+      controller: ["pass", "<code>login(dto)</code> calls <code>authService.login(username, password)</code>."],
+      service: ["pass", "Finds the user, then <code>bcrypt.compare()</code> ✓, then <code>jwtService.signAsync({ sub, username, role })</code>."],
+      prisma: ["pass", "<code>prisma.user.findUnique({ where: { username } })</code>"],
+      db: ["pass", "<code>SELECT * FROM User WHERE username = 'admin'</code>"],
+    },
+    res: "{\n  \"access_token\": \"eyJhbGciOiJIUzI1NiIs…\"\n}",
+    why: "The service returns the token and NestJS sends it as JSON. The client keeps it for the next requests.",
+  },
+  {
+    id: "list", label: "List my todos", code: 200,
+    req: "GET /todos\n" + BOB,
+    files: { controller: ["todos/todos.controller.ts", "auth/decorators/current-user.decorator.ts"], service: ["todos/todos.service.ts"] },
+    steps: {
+      client: ["pass", "Sends the token in the <code>Authorization</code> header."],
+      main: ["pass", "The route matches <code>TodosController.findAll</code>."],
+      guard: ["pass", "The signature and expiry check out, so <code>request.user = { sub: 4, username: 'bob', role: 'USER' }</code>."],
+      pipes: ["pass", "There's no body and no <code>:id</code> on this route, so nothing needs checking."],
+      controller: ["pass", "<code>@CurrentUser() user</code> reads <code>request.user</code>, then calls <code>findAll(user.sub)</code> with <code>4</code>."],
+      service: ["pass", "<code>findAll(4)</code>: only bob's todos."],
+      prisma: ["pass", "<code>prisma.todo.findMany({ where: { userId: 4 }, orderBy: { id: 'asc' } })</code>"],
+      db: ["pass", "<code>SELECT * FROM Todo WHERE userId = 4 ORDER BY id</code>"],
+    },
+    res: "[\n  {\n    \"id\": 6,\n    \"title\": \"bob's todo\",\n    \"done\": false,\n    \"createdAt\": \"2026-09-29T09:37:18.470Z\",\n    \"userId\": 4\n  }\n]",
+    why: "Admin's todos never appear, because the query itself filters by bob's id.",
+  },
+  {
+    id: "create", label: "Create a todo", code: 201,
+    req: "POST /todos\n" + BOB + "\nContent-Type: application/json\n\n{\n  \"title\": \"Buy milk\",\n  \"userId\": 2\n}",
+    files: { pipes: ["todos/dto/create-todo.dto.ts"], controller: ["todos/todos.controller.ts", "auth/decorators/current-user.decorator.ts"], service: ["todos/todos.service.ts"] },
+    steps: {
+      client: ["pass", "Sends a title, plus a sneaky <code>userId: 2</code> to try to post as admin."],
+      main: ["pass", "The route matches <code>TodosController.create</code>."],
+      guard: ["pass", "Valid token, so <code>request.user.sub = 4</code> (bob)."],
+      pipes: ["pass", "<code>CreateTodoDto</code>: the title is a non-empty string ✓. <code>whitelist: true</code> removes the extra <code>userId</code>."],
+      controller: ["pass", "<code>create(user.sub, dto.title)</code>, which is <code>create(4, 'Buy milk')</code>."],
+      service: ["pass", "The owner comes from the verified token, never from the body."],
+      prisma: ["pass", "<code>prisma.todo.create({ data: { title, userId: 4 } })</code>"],
+      db: ["pass", "<code>INSERT INTO Todo (title, userId) VALUES ('Buy milk', 4)</code>. The database fills in <code>id</code>, <code>done</code> and <code>createdAt</code>."],
+    },
+    res: "{\n  \"id\": 8,\n  \"title\": \"Buy milk\",\n  \"done\": false,\n  \"createdAt\": \"2026-09-29T10:02:11.000Z\",\n  \"userId\": 4\n}",
+    why: "201 Created is the default status for @Post(). The todo belongs to bob even though the body said 2.",
+  },
+  {
+    id: "noToken", label: "No token", code: 401,
+    req: "GET /todos\n(no Authorization header)",
+    files: { controller: ["todos/todos.controller.ts"], service: ["todos/todos.service.ts"] },
+    steps: {
+      client: ["pass", "Forgets to send a token. This is what the frontend page does until A6."],
+      main: ["pass", "The route matches <code>TodosController.findAll</code>."],
+      guard: ["stop", "No <code>Bearer</code> token in the header, so it throws <code>UnauthorizedException('Missing token')</code>."],
+      pipes: ["skip", "Not reached."],
+      controller: ["skip", "Not reached."],
+      service: ["skip", "Not reached."],
+      prisma: ["skip", "Not reached."],
+      db: ["skip", "Not reached. The database is never touched."],
+    },
+    res: "{\n  \"message\": \"Missing token\",\n  \"error\": \"Unauthorized\",\n  \"statusCode\": 401\n}",
+    why: "The guard runs before everything else, so a caller who isn't logged in learns nothing about your data.",
+  },
+  {
+    id: "tampered", label: "Edited token", code: 401,
+    req: "GET /auth/me\nAuthorization: Bearer eyJhbGci….<payload edited to role ADMIN>.E2zq…",
+    files: { controller: ["auth/auth.controller.ts"], service: ["—"] },
+    steps: {
+      client: ["pass", "Decodes the token, changes <code>\"role\":\"USER\"</code> to <code>\"ADMIN\"</code>, and sends it back."],
+      main: ["pass", "The route matches <code>AuthController.me</code>."],
+      guard: ["stop", "<code>verifyAsync</code> recomputes HMAC-SHA256 with <code>JWT_SECRET</code>. The signature doesn't match, so it throws <code>UnauthorizedException</code>."],
+      pipes: ["skip", "Not reached."],
+      controller: ["skip", "Not reached."],
+      service: ["skip", "Not reached."],
+      prisma: ["skip", "Not reached."],
+      db: ["skip", "Not reached."],
+    },
+    res: "{\n  \"message\": \"Invalid or expired token\",\n  \"error\": \"Unauthorized\",\n  \"statusCode\": 401\n}",
+    why: "Anyone can read the payload, but nobody can change it without the server's secret.",
+  },
+  {
+    id: "badBody", label: "Empty title", code: 400,
+    req: "POST /todos\n" + BOB + "\nContent-Type: application/json\n\n{\n  \"title\": \"\"\n}",
+    files: { pipes: ["todos/dto/create-todo.dto.ts"], controller: ["todos/todos.controller.ts"], service: ["todos/todos.service.ts"] },
+    steps: {
+      client: ["pass", "Submits an empty title."],
+      main: ["pass", "The route matches <code>TodosController.create</code>."],
+      guard: ["pass", "Valid token, so it's bob."],
+      pipes: ["stop", "<code>CreateTodoDto</code>: <code>@IsNotEmpty()</code> fails, so <code>ValidationPipe</code> throws <code>BadRequestException</code>."],
+      controller: ["skip", "Not reached."],
+      service: ["skip", "Not reached."],
+      prisma: ["skip", "Not reached."],
+      db: ["skip", "Not reached. Nothing is saved."],
+    },
+    res: "{\n  \"message\": [\"title should not be empty\"],\n  \"error\": \"Bad Request\",\n  \"statusCode\": 400\n}",
+    why: "Bad input is rejected before your code runs, so the controller can trust its inputs.",
+  },
+  {
+    id: "notYours", label: "Edit someone else's todo", code: 404,
+    req: "PATCH /todos/1\n" + BOB + "\nContent-Type: application/json\n\n{\n  \"done\": true\n}",
+    files: { pipes: ["ParseIntPipe", "todos/dto/update-todo.dto.ts"], controller: ["todos/todos.controller.ts", "auth/decorators/current-user.decorator.ts"], service: ["todos/todos.service.ts"] },
+    steps: {
+      client: ["pass", "Bob tries to tick todo 1, which belongs to admin."],
+      main: ["pass", "The route matches <code>TodosController.update</code> with <code>:id = \"1\"</code>."],
+      guard: ["pass", "Valid token, so <code>request.user.sub = 4</code>."],
+      pipes: ["pass", "<code>ParseIntPipe</code> turns <code>\"1\"</code> into <code>1</code>. <code>UpdateTodoDto</code>: <code>done</code> is a boolean ✓"],
+      controller: ["pass", "<code>update(user.sub, id, dto.done)</code>, which is <code>update(4, 1, true)</code>."],
+      service: ["stop", "<code>findOneOrFail(4, 1)</code> gets <code>null</code> back from the database, so it throws <code>NotFoundException</code>. The update never runs."],
+      prisma: ["pass", "<code>prisma.todo.findFirst({ where: { id: 1, userId: 4 } })</code>"],
+      db: ["pass", "<code>SELECT … FROM Todo WHERE id = 1 AND userId = 4</code> returns no rows."],
+    },
+    res: "{\n  \"message\": \"Todo 1 not found\",\n  \"error\": \"Not Found\",\n  \"statusCode\": 404\n}",
+    why: "404, not 403: to bob, admin's todo doesn't exist, so he learns nothing about it.",
+  },
+];
+
+const $ = (id) => document.getElementById(id);
+const scenBox = $("scenarios");
+let current = SCENARIOS[0].id;
+
+function render() {
+  const s = SCENARIOS.find((x) => x.id === current);
+  scenBox.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.id === current)));
+
+  $("stages").innerHTML = STAGES.map((st, i) => {
+    const [state, note] = s.steps[st.key];
+    const files = (s.files[st.key] || st.files).map((f) => `<span>${f}</span>`).join("");
+    const mark = state === "stop" ? "✕" : state === "skip" ? "–" : String(i + 1);
+    return `<li class="stage ${state}">
+      <div class="dot" aria-hidden="true">${mark}</div>
+      <div class="card">
+        <div class="stage-head"><span class="stage-name">${st.name}</span><span class="stage-role">${st.role}</span></div>
+        <div class="files">${files}</div>
+        <div class="note">${state === "stop" ? "Stops here. " : ""}${note}</div>
+      </div>
+    </li>`;
+  }).join("");
+
+  $("req").textContent = s.req;
+  $("res").textContent = s.res;
+  const st = $("status");
+  st.textContent = String(s.code);
+  st.className = "status " + (s.code < 400 ? "ok" : "err");
+  $("why").textContent = s.why;
+}
+
+scenBox.innerHTML = SCENARIOS.map((s) =>
+  `<button type="button" data-id="${s.id}" aria-pressed="false">${s.label}<span class="code-pill ${s.code < 400 ? "ok" : "err"}">${s.code}</span></button>`
+).join("");
+scenBox.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  current = b.dataset.id;
+  render();
+});
+render();
+</script>
+
+</body>
+</html>

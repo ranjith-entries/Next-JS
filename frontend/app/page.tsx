@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useState, type SubmitEvent } from "react"; // NEW: SubmitEvent
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, type SubmitEvent } from "react";
+import { api } from "@/lib/api";
+import { clearToken, getToken } from "@/lib/auth";
 
 type Todo = {
   id: number;
@@ -9,37 +13,78 @@ type Todo = {
   createdAt: string;
 };
 
+type Me = {
+  sub: number;
+  username: string;
+  role: "USER" | "ADMIN";
+};
+
 export default function Home() {
+  const router = useRouter();
+  const [me, setMe] = useState<Me | null>(null);
   const [todos, setTodos] = useState<Todo[]>([]);
-  const [title, setTitle] = useState(""); // NEW
+  const [title, setTitle] = useState("");
 
   useEffect(() => {
-    fetch("http://localhost:4000/todos")
-      .then((res) => res.json())
-      .then((data) => setTodos(data));
-  }, []);
+    if (!getToken()) {
+      router.replace("/login");
+      return;
+    }
+    Promise.all([api<Me>("/auth/me"), api<Todo[]>("/todos")]).then(([user, list]) => {
+      setMe(user);
+      setTodos(list);
+    });
+  }, [router]);
 
-  // NEW
   async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!title.trim()) return;
 
-    const res = await fetch("http://localhost:4000/todos", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    const newTodo: Todo = await res.json();
-
+    const newTodo = await api<Todo>("/todos", { method: "POST", body: { title } });
     setTodos([...todos, newTodo]);
     setTitle("");
   }
 
-  return (
-    <main className="mx-auto max-w-md p-8">
-      <h1 className="mb-4 text-2xl font-bold">My Todos</h1>
+  async function toggleTodo(todo: Todo) {
+    const updated = await api<Todo>(`/todos/${todo.id}`, {
+      method: "PATCH",
+      body: { done: !todo.done },
+    });
+    setTodos(todos.map((t) => (t.id === updated.id ? updated : t)));
+  }
 
-      {/* NEW */}
+  async function deleteTodo(id: number) {
+    await api(`/todos/${id}`, { method: "DELETE" });
+    setTodos(todos.filter((t) => t.id !== id));
+  }
+
+  function logout() {
+    clearToken();
+    router.replace("/login");
+  }
+
+  return (
+    <main className="mx-auto w-full max-w-md p-8">
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-bold">My Todos</h1>
+        {me && (
+          <div className="flex items-center gap-3 text-sm">
+            <span>
+              {me.username}
+              {me.role === "ADMIN" && " (admin)"}
+            </span>
+            {me.role === "ADMIN" && (
+              <Link href="/admin" className="text-blue-600 hover:underline">
+                All todos
+              </Link>
+            )}
+            <button onClick={logout} className="text-blue-600 hover:underline">
+              Log out
+            </button>
+          </div>
+        )}
+      </div>
+
       <form onSubmit={handleSubmit} className="mb-4 flex gap-2">
         <input
           value={title}
@@ -54,7 +99,7 @@ export default function Home() {
 
       <ul>
         {todos.map((todo) => (
-            <li
+          <li
             key={todo.id}
             onClick={() => toggleTodo(todo)}
             className="flex cursor-pointer items-center justify-between border-b py-2"
@@ -76,24 +121,4 @@ export default function Home() {
       </ul>
     </main>
   );
-
-  async function toggleTodo(todo: Todo) {
-    const res = await fetch(`http://localhost:4000/todos/${todo.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ done: !todo.done }),
-    });
-    const updated: Todo = await res.json();
-
-    setTodos(todos.map((t) => (t.id === updated.id ? updated : t)));
-  }
-
-   async function deleteTodo(id: number) {
-    const res = await fetch(`http://localhost:4000/todos/${id}`, {
-      method: "DELETE",
-    });
-    if (!res.ok) return;
-
-    setTodos(todos.filter((t) => t.id !== id));
-  }
 }
